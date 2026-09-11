@@ -1,0 +1,47 @@
+{
+  "//": "Configuração principal do npm — define metadados, scripts e dependências do SysStone-DB",
+  "name": "sysstone-db",
+  "version": "0.0.1",
+  "description": "Banco de dados embutido, assíncrono e otimizado para Node.js",
+  "main": "js/index.js",
+  "type": "module",
+
+  "//exports": "Define o ponto de entrada quando alguém importar 'sysstone-db'",
+  "exports": {
+    ".": "./js/index.js"
+  },
+
+  "//scripts": "Comandos usados durante o desenvolvimento do projeto",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "test": "node --test tests/",
+    "bench": "node benchmarks/run.js",
+    "lint": "eslint ."
+  },
+
+  "//keywords": "Palavras-chave para busca no npm",
+  "keywords": [
+    "database",
+    "embedded",
+    "db",
+    "nosql",
+    "nodejs",
+    "sysstone"
+  ],
+
+  "author": "",
+  "license": "MIT",
+
+  "//engines": "Versões mínimas de Node necessárias",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+
+  "//devDependencies": "Dependências usadas apenas em desenvolvimento",
+  "devDependencies": {
+    "node-gyp": "^10.0.0"
+  },
+
+  "//gypfile": "Avisa que existe um binding.gyp para compilar o core em C++",
+  "gypfile": true
+}
