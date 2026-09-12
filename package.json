@@ -1,19 +1,21 @@
 {
-  "//": "Configuração principal do npm — define metadados, scripts e dependências do SysStone-DB",
+  "//": "Configuração principal do npm — SysStone-DB",
   "name": "sysstone-db",
   "version": "0.0.1",
   "description": "Banco de dados embutido, assíncrono e otimizado para Node.js",
   "main": "js/index.js",
   "type": "module",
 
-  "//exports": "Define o ponto de entrada quando alguém importar 'sysstone-db'",
+  "//exports": "Ponto de entrada quando alguém importar 'sysstone-db'",
   "exports": {
     ".": "./js/index.js"
   },
 
-  "//scripts": "Comandos usados durante o desenvolvimento do projeto",
+  "//scripts": "Comandos usados durante o desenvolvimento",
   "scripts": {
     "build": "node-gyp rebuild",
+    "rebuild": "node-gyp rebuild",
+    "clean": "node-gyp clean",
     "test": "node --test tests/",
     "bench": "node benchmarks/run.js",
     "lint": "eslint ."
@@ -35,6 +37,11 @@
   "//engines": "Versões mínimas de Node necessárias",
   "engines": {
     "node": ">=18.0.0"
+  },
+
+  "//dependencies": "Dependências de runtime (vão junto pro usuário final)",
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
   },
 
   "//devDependencies": "Dependências usadas apenas em desenvolvimento",
