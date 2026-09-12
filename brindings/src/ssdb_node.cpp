@@ -1,13 +1,11 @@
-// ssdb_node.cpp — Implementação do binding N-API
-// Aqui traduzimos chamadas JavaScript em chamadas C++ e vice-versa.
+// ssdb_node.cpp — Binding N-API completo
+// Expõe: open, close, put, get, remove, keys, find, count
 
 #include "ssdb_node.h"
 
 namespace sysstone_node {
 
-// Inicializa a classe Database e registra os métodos no Node
 Napi::Object Database::Init(Napi::Env env, Napi::Object exports) {
-    // Define a função construtora "Database"
     Napi::Function func = DefineClass(env, "Database", {
         InstanceMethod("open",   &Database::Open),
         InstanceMethod("close",  &Database::Close),
@@ -15,53 +13,41 @@ Napi::Object Database::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("get",    &Database::Get),
         InstanceMethod("remove", &Database::Remove),
         InstanceMethod("keys",   &Database::Keys),
+        InstanceMethod("find",   &Database::Find),
+        InstanceMethod("count",  &Database::Count),
     });
 
-    // Permite "new Database()" no JavaScript
     exports.Set("Database", func);
     return exports;
 }
 
-// Construtor — recebe o caminho do banco como primeiro argumento
 Database::Database(const Napi::CallbackInfo& info)
     : Napi::ObjectWrap<Database>(info) {
 
     Napi::Env env = info.Env();
 
-    // Verifica se o usuário passou o caminho
     if (info.Length() < 1 || !info[0].IsString()) {
         Napi::TypeError::New(env, "Caminho do banco é obrigatório (string)")
             .ThrowAsJavaScriptException();
         return;
     }
 
-    // Pega o caminho como string C++
     std::string path = info[0].As<Napi::String>().Utf8Value();
-
-    // Cria o Engine de verdade
     engine_ = std::make_unique<sysstone::Engine>(path);
 }
 
-// Destrutor — garante que o Engine seja liberado
-Database::~Database() {
-    // O unique_ptr cuida disso automaticamente
-}
+Database::~Database() {}
 
-// Implementa db.open()
 Napi::Value Database::Open(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    bool ok = engine_->open();
-    return Napi::Boolean::New(env, ok);
+    return Napi::Boolean::New(env, engine_->open());
 }
 
-// Implementa db.close()
 Napi::Value Database::Close(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    bool ok = engine_->close();
-    return Napi::Boolean::New(env, ok);
+    return Napi::Boolean::New(env, engine_->close());
 }
 
-// Implementa db.put(collection, key, value)
 Napi::Value Database::Put(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -75,11 +61,9 @@ Napi::Value Database::Put(const Napi::CallbackInfo& info) {
     std::string key        = info[1].As<Napi::String>().Utf8Value();
     std::string value      = info[2].As<Napi::String>().Utf8Value();
 
-    bool ok = engine_->put(collection, key, value);
-    return Napi::Boolean::New(env, ok);
+    return Napi::Boolean::New(env, engine_->put(collection, key, value));
 }
 
-// Implementa db.get(collection, key)
 Napi::Value Database::Get(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -93,17 +77,12 @@ Napi::Value Database::Get(const Napi::CallbackInfo& info) {
     std::string key        = info[1].As<Napi::String>().Utf8Value();
     std::string value;
 
-    bool found = engine_->get(collection, key, value);
-
-    // Se não encontrou, retorna null no JS
-    if (!found) {
+    if (!engine_->get(collection, key, value)) {
         return env.Null();
     }
-
     return Napi::String::New(env, value);
 }
 
-// Implementa db.remove(collection, key)
 Napi::Value Database::Remove(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -116,11 +95,9 @@ Napi::Value Database::Remove(const Napi::CallbackInfo& info) {
     std::string collection = info[0].As<Napi::String>().Utf8Value();
     std::string key        = info[1].As<Napi::String>().Utf8Value();
 
-    bool ok = engine_->remove(collection, key);
-    return Napi::Boolean::New(env, ok);
+    return Napi::Boolean::New(env, engine_->remove(collection, key));
 }
 
-// Implementa db.keys(collection)
 Napi::Value Database::Keys(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -133,7 +110,6 @@ Napi::Value Database::Keys(const Napi::CallbackInfo& info) {
     std::string collection = info[0].As<Napi::String>().Utf8Value();
     auto keys = engine_->keys(collection);
 
-    // Converte std::vector<std::string> em array JS
     Napi::Array arr = Napi::Array::New(env, keys.size());
     for (size_t i = 0; i < keys.size(); i++) {
         arr[i] = Napi::String::New(env, keys[i]);
@@ -141,12 +117,83 @@ Napi::Value Database::Keys(const Napi::CallbackInfo& info) {
     return arr;
 }
 
-// Função de entrada do módulo — chamada quando o Node faz "require"
+// find(collection, filters_json)
+// filters_json: string JSON tipo '[{"field":"idade","op":"$gt","value":"18"}]'
+Napi::Value Database::Find(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "find precisa de 2 argumentos")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    std::string collection = info[0].As<Napi::String>().Utf8Value();
+    std::string filters_raw = info[1].As<Napi::String>().Utf8Value();
+
+    // Parse manual simples do JSON de filtros
+    // Formato esperado: [{"field":"x","op":"$gt","value":"10"}, ...]
+    std::vector<sysstone::Filter> filters;
+
+    size_t pos = 0;
+    while ((pos = filters_raw.find("\"field\"", pos)) != std::string::npos) {
+        sysstone::Filter f;
+
+        // Extrai field
+        size_t fstart = filters_raw.find('"', pos + 8);
+        size_t fend = filters_raw.find('"', fstart + 1);
+        if (fstart == std::string::npos || fend == std::string::npos) break;
+        f.field = filters_raw.substr(fstart + 1, fend - fstart - 1);
+
+        // Extrai op
+        size_t opos = filters_raw.find("\"op\"", fend);
+        if (opos == std::string::npos) break;
+        size_t ostart = filters_raw.find('"', opos + 5);
+        size_t oend = filters_raw.find('"', ostart + 1);
+        if (ostart == std::string::npos || oend == std::string::npos) break;
+        std::string op_str = filters_raw.substr(ostart + 1, oend - ostart - 1);
+        f.op = sysstone::parse_operator(op_str);
+
+        // Extrai value
+        size_t vpos = filters_raw.find("\"value\"", oend);
+        if (vpos == std::string::npos) break;
+        size_t vstart = filters_raw.find('"', vpos + 8);
+        size_t vend = filters_raw.find('"', vstart + 1);
+        if (vstart == std::string::npos || vend == std::string::npos) break;
+        f.value = filters_raw.substr(vstart + 1, vend - vstart - 1);
+
+        filters.push_back(f);
+        pos = vend + 1;
+    }
+
+    auto results = engine_->find(collection, filters);
+
+    // Retorna array de strings JSON (cada uma é um documento)
+    Napi::Array arr = Napi::Array::New(env, results.size());
+    for (size_t i = 0; i < results.size(); i++) {
+        arr[i] = Napi::String::New(env, results[i].second);
+    }
+    return arr;
+}
+
+Napi::Value Database::Count(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "count precisa de 1 argumento")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    std::string collection = info[0].As<Napi::String>().Utf8Value();
+    size_t total = engine_->count(collection);
+    return Napi::Number::New(env, static_cast<double>(total));
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     return sysstone_node::Database::Init(env, exports);
 }
 
-// Registra o módulo como "sysstone"
 NODE_API_MODULE(sysstone, InitAll)
 
 } // namespace sysstone_node
