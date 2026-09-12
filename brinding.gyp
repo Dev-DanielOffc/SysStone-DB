@@ -1,36 +1,33 @@
-# Arquivo de configuração do node-gyp
-# Ele diz como compilar o core em C++ para gerar o módulo .node
-
 {
-  "//": "Nome do alvo que será compilado",
   "targets": [
     {
-      "//": "Nome do módulo final (vira sysstone.node)",
       "target_name": "sysstone",
 
-      "//sources": "Lista de arquivos C++ que serão compilados",
       "sources": [
         "bindings/src/ssdb_node.cpp",
-        "core/src/engine.cpp"
+        "core/src/engine.cpp",
+        "core/src/storage.cpp",
+        "core/src/query.cpp"
       ],
 
-      "//include_dirs": "Pastas onde o compilador procura os headers (.h)",
       "include_dirs": [
         "core/include",
-        "bindings/include"
+        "bindings/include",
+        "<!(node -p \"require('node-addon-api').include_dir\")"
       ],
 
-      "//cflags_cc": "Flags extras para o compilador C++",
+      "defines": [
+        "NAPI_CPP_EXCEPTIONS"
+      ],
+
       "cflags_cc": [
         "-std=c++17",
         "-O2",
         "-fexceptions"
       ],
 
-      "//conditions": "Configurações específicas por sistema operacional",
       "conditions": [
         ["OS=='win'", {
-          "//": "Configurações para Windows (MSVC)",
           "msvs_settings": {
             "VCCLCompilerTool": {
               "ExceptionHandling": 1,
@@ -40,12 +37,14 @@
           }
         }],
         ["OS=='mac'", {
-          "//": "Configurações para macOS (Clang)",
           "xcode_settings": {
             "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "OTHER_CPLUSPLUSFLAGS": ["-O2"]
           }
+        }],
+        ["OS=='linux'", {
+          "cflags_cc": ["-std=c++17", "-O2", "-fexceptions"]
         }]
       ]
     }
