@@ -19,7 +19,7 @@ A diferencia de PostgreSQL, MySQL o MongoDB, **SysStone-DB no necesita servidor*
 
 Nada de VPS, contraseñas, puertos ni configuración. Es solo una carpeta en el disco.
 
-```
+```bash
 import { SysStone } from 'sysstone-db';
 
 const db = new SysStone('./data');
