@@ -1,5 +1,5 @@
 // engine.h — Cabeçalho principal do core do SysStone-DB
-// Aqui declaramos a classe Engine, que é o coração do banco de dados.
+// Esta versão já integra storage (segmentos) e query (filtros).
 
 #ifndef SYSSTONE_ENGINE_H
 #define SYSSTONE_ENGINE_H
@@ -10,69 +10,71 @@
 #include <mutex>
 #include <memory>
 
-// Namespace próprio do projeto — evita conflito com outras libs
+#include "storage.h"
+#include "query.h"
+
 namespace sysstone {
 
-// Estrutura simples que representa um documento armazenado
-// (por enquanto é só uma string, mas depois vira algo mais sério)
+// Estrutura que representa um documento
 struct Document {
-    std::string key;    // chave única do documento
-    std::string value;  // conteúdo serializado (JSON por enquanto)
+    std::string key;
+    std::string value;
 };
 
-// Classe principal do motor do banco de dados
-// Ela vai gerenciar coleções, documentos e persistência
+// Classe principal do motor — agora com persistência real em segmentos
 class Engine {
 public:
-    // Construtor — recebe o caminho do diretório onde o banco fica
     explicit Engine(const std::string& path);
-
-    // Destrutor — fecha o banco e limpa recursos
     ~Engine();
 
-    // Abre o banco (carrega dados do disco, se existirem)
+    // Ciclo de vida
     bool open();
-
-    // Fecha o banco (salva tudo antes de sair)
     bool close();
+    bool is_open() const { return is_open_; }
 
-    // Insere ou atualiza um documento dentro de uma coleção
+    // Operações básicas
     bool put(const std::string& collection,
              const std::string& key,
              const std::string& value);
 
-    // Busca um documento pela chave
     bool get(const std::string& collection,
              const std::string& key,
              std::string& out_value);
 
-    // Remove um documento
     bool remove(const std::string& collection,
                 const std::string& key);
 
-    // Lista todas as chaves de uma coleção
     std::vector<std::string> keys(const std::string& collection);
 
-private:
-    // Caminho do diretório onde o banco está salvo
-    std::string path_;
+    // Busca com filtros (tipo MongoDB)
+    // Retorna lista de pares (key, value) que batem com os filtros
+    std::vector<std::pair<std::string, std::string>>
+    find(const std::string& collection,
+         const std::vector<Filter>& filters);
 
-    // Flag que indica se o banco está aberto
+    // Conta quantos documentos existem na coleção
+    size_t count(const std::string& collection);
+
+private:
+    std::string path_;
     bool is_open_;
 
-    // Estrutura em memória: coleção -> (chave -> valor)
-    // Depois isso vira algo mais otimizado (B-tree / LSM)
+    // Cache em memória: coleção -> (chave -> valor)
+    // Fonte da verdade é o disco (segmentos), memória é cache rápido
     std::unordered_map<std::string,
         std::unordered_map<std::string, std::string>> data_;
 
-    // Mutex para evitar condições de corrida entre threads
+    // Um gerenciador de segmentos por coleção
+    std::unordered_map<std::string,
+        std::unique_ptr<SegmentManager>> stores_;
+
     std::mutex mutex_;
 
-    // Método interno para carregar dados do disco
-    void load_from_disk();
-
-    // Método interno para salvar dados no disco
-    void save_to_disk();
+    // Helpers internos
+    void load_collection(const std::string& collection);
+    void save_to_disk(const std::string& collection);
+    SegmentManager* get_or_create_store(const std::string& collection);
+    std::string collection_path(const std::string& collection);
 };
 
 } // namespace sysstone
