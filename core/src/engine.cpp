@@ -1,43 +1,38 @@
-// engine.cpp — Implementação do motor do SysStone-DB
-// Aqui a mágica acontece: gerenciamos dados, disco e concorrência.
+// engine.cpp — Implementação completa do motor do SysStone-DB
+// Agora com persistência real em segmentos e queries funcionais.
 
 #include "engine.h"
 
 #include <fstream>
 #include <filesystem>
 #include <iostream>
-#include <sstream>
 
-// Namespace do projeto
 namespace sysstone {
 
-// Atalho para não escrever std::filesystem toda hora
 namespace fs = std::filesystem;
 
-// Construtor — só guarda o caminho e marca como fechado
-Engine::Engine(const std::string& path)
-    : path_(path), is_open_(false) {
-    // Nada mais a fazer aqui por enquanto
-}
+// ============================
+// Construtor / Destrutor
+// ============================
 
-// Destrutor — garante que o banco seja fechado corretamente
+Engine::Engine(const std::string& path)
+    : path_(path), is_open_(false) {}
+
 Engine::~Engine() {
     if (is_open_) {
         close();
     }
 }
 
-// Abre o banco: cria a pasta se não existir e carrega os dados
+// ============================
+// Ciclo de vida
+// ============================
+
 bool Engine::open() {
-    // Trava o mutex para evitar acesso simultâneo
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Se já estiver aberto, não faz nada
-    if (is_open_) {
-        return true;
-    }
+    if (is_open_) return true;
 
-    // Cria o diretório do banco se ele não existir
     try {
         if (!fs::exists(path_)) {
             fs::create_directories(path_);
@@ -48,114 +43,190 @@ bool Engine::open() {
         return false;
     }
 
-    // Carrega dados existentes do disco
-    load_from_disk();
+    // Descobre coleções existentes no disco e carrega cada uma
+    try {
+        for (const auto& entry : fs::directory_iterator(path_)) {
+            if (entry.is_directory()) {
+                std::string coll = entry.path().filename().string();
+                load_collection(coll);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[SysStone] Erro ao carregar coleções: "
+                  << e.what() << std::endl;
+        return false;
+    }
 
     is_open_ = true;
     return true;
 }
 
-// Fecha o banco, salvando tudo antes
 bool Engine::close() {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!is_open_) {
-        return true;
-    }
+    if (!is_open_) return true;
 
-    // Salva os dados no disco antes de fechar
-    save_to_disk();
+    // Fecha todos os segment managers
+    for (auto& [name, store] : stores_) {
+        store->close();
+    }
+    stores_.clear();
+    data_.clear();
 
     is_open_ = false;
-    data_.clear();
     return true;
 }
 
-// Insere ou atualiza um documento
+// ============================
+// Helpers internos
+// ============================
+
+std::string Engine::collection_path(const std::string& collection) {
+    return path_ + "/" + collection;
+}
+
+SegmentManager* Engine::get_or_create_store(const std::string& collection) {
+    auto it = stores_.find(collection);
+    if (it != stores_.end()) {
+        return it->second.get();
+    }
+
+    // Cria um novo SegmentManager para essa coleção
+    std::string coll_path = collection_path(collection);
+    auto store = std::make_unique<SegmentManager>(coll_path);
+
+    if (!store->open()) {
+        return nullptr;
+    }
+
+    SegmentManager* ptr = store.get();
+    stores_[collection] = std::move(store);
+    return ptr;
+}
+
+void Engine::load_collection(const std::string& collection) {
+    // Cria o store e lê todos os segmentos da coleção
+    SegmentManager* store = get_or_create_store(collection);
+    if (!store) return;
+
+    auto records = store->read_all();
+
+    // Aplica em memória — o último valor de uma chave sobrescreve
+    auto& coll_map = data_[collection];
+    for (auto& [key, value] : records) {
+        coll_map[key] = value;
+    }
+}
+
+void Engine::save_to_disk(const std::string& collection) {
+    // Garante que o store existe (mesmo que não tenha nada novo)
+    get_or_create_store(collection);
+    // Os writes já vão direto pro disco no put(), então aqui é no-op.
+    // Mantido para futuras compactações.
+}
+
+// ============================
+// Operações básicas
+// ============================
+
 bool Engine::put(const std::string& collection,
                  const std::string& key,
                  const std::string& value) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!is_open_) {
+    if (!is_open_) return false;
+
+    // Garante que o store existe
+    SegmentManager* store = get_or_create_store(collection);
+    if (!store) return false;
+
+    // Escreve no disco (append-only)
+    if (!store->write(key, value)) {
         return false;
     }
 
-    // Insere ou sobrescreve o valor
+    // Atualiza cache em memória
     data_[collection][key] = value;
     return true;
 }
 
-// Busca um documento pela chave
 bool Engine::get(const std::string& collection,
                  const std::string& key,
                  std::string& out_value) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!is_open_) {
-        return false;
-    }
+    if (!is_open_) return false;
 
-    // Procura a coleção
     auto it_coll = data_.find(collection);
-    if (it_coll == data_.end()) {
-        return false;
-    }
+    if (it_coll == data_.end()) return false;
 
-    // Procura a chave dentro da coleção
     auto it_key = it_coll->second.find(key);
-    if (it_key == it_coll->second.end()) {
-        return false;
-    }
+    if (it_key == it_coll->second.end()) return false;
 
     out_value = it_key->second;
     return true;
 }
 
-// Remove um documento
 bool Engine::remove(const std::string& collection,
                     const std::string& key) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!is_open_) {
-        return false;
-    }
+    if (!is_open_) return false;
 
     auto it_coll = data_.find(collection);
-    if (it_coll == data_.end()) {
-        return false;
+    if (it_coll == data_.end()) return false;
+
+    bool erased = it_coll->second.erase(key) > 0;
+
+    // Grava um "tombstone" no disco pra marcar remoção
+    // Formato especial: chave com prefixo especial e valor vazio
+    if (erased) {
+        SegmentManager* store = get_or_create_store(collection);
+        if (store) {
+            store->write("\x01__deleted__" + key, "");
+        }
     }
 
-    return it_coll->second.erase(key) > 0;
+    return erased;
 }
 
-// Lista todas as chaves de uma coleção
 std::vector<std::string> Engine::keys(const std::string& collection) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     std::vector<std::string> result;
     auto it_coll = data_.find(collection);
-    if (it_coll == data_.end()) {
-        return result;
-    }
+    if (it_coll == data_.end()) return result;
 
-    // Percorre todas as chaves e adiciona ao resultado
-    for (const auto& pair : it_coll->second) {
-        result.push_back(pair.first);
+    for (const auto& [k, v] : it_coll->second) {
+        result.push_back(k);
     }
     return result;
 }
 
-// Carrega dados do disco (implementação simples por enquanto)
-void Engine::load_from_disk() {
-    // Por enquanto não carregamos nada — isso virá na Fase 1
-    // Aqui é onde vamos ler os arquivos de segmento depois
+std::vector<std::pair<std::string, std::string>>
+Engine::find(const std::string& collection,
+             const std::vector<Filter>& filters) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::vector<std::pair<std::string, std::string>> result;
+
+    auto it_coll = data_.find(collection);
+    if (it_coll == data_.end()) return result;
+
+    for (const auto& [key, value] : it_coll->second) {
+        if (matches_all_filters(value, filters)) {
+            result.emplace_back(key, value);
+        }
+    }
+    return result;
 }
 
-// Salva dados no disco (implementação simples por enquanto)
-void Engine::save_to_disk() {
-    // Por enquanto não salvamos nada — isso virá na Fase 1
-    // Aqui é onde vamos escrever os segmentos depois
+size_t Engine::count(const std::string& collection) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it_coll = data_.find(collection);
+    if (it_coll == data_.end()) return 0;
+    return it_coll->second.size();
 }
 
 } // namespace sysstone
